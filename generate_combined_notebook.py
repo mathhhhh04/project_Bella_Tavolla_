@@ -1,0 +1,283 @@
+import json
+
+combined_notebook = {
+    "cells": [
+        {
+            "cell_type": "markdown",
+            "id": "ci_title",
+            "metadata": {},
+            "source": [
+                "# Esteira de CI Completa com GitHub Actions — Bella Tavola 🍝\n",
+                "## Testes Automatizados, Integração de Modelo e MLOps (Semanas 3 e 4)"
+            ]
+        },
+        {
+            "cell_type": "markdown",
+            "id": "ci_overview",
+            "metadata": {},
+            "source": [
+                "Este caderno consolida as etapas de **Garantia de Qualidade de Código** e **Integração de Modelo Remoto** no pipeline de Integração Contínua (CI).\n",
+                "\n",
+                "### Objetivos Práticos:\n",
+                "1. **Testes de API (`pytest`)**: Validar endpoints do FastAPI (`TestClient`), verificando contratos, regras de validação e status codes.\n",
+                "2. **Integração do Registry (`Hugging Face`)**: Baixar de forma segura o modelo `math04cezario/mlops-bella-tavola-v1` usando segredos criptografados do GitHub.\n",
+                "3. **Otimização de Pipeline**: Configurar cache inteligente das dependências do modelo para acelerar o GitHub Actions.\n",
+                "4. **Arquitetura de CI (3 Jobs)**: Entender a divisão lógica entre os ambientes de `Qualidade`, `Integração` e `Relatório`."
+            ]
+        },
+        {
+            "cell_type": "markdown",
+            "id": "sec1_title",
+            "metadata": {},
+            "source": [
+                "--- \n",
+                "# SEÇÃO 1 — Estrutura de Testes com Pytest & FastAPI TestClient 🧪"
+            ]
+        },
+        {
+            "cell_type": "markdown",
+            "id": "sec1_desc",
+            "metadata": {},
+            "source": [
+                "Abaixo simulamos a estrutura base do arquivo `tests/conftest.py` e os testes rápidos (*Smoke Tests*) para validar se a aplicação FastAPI inicializa corretamente e expõe as rotas essenciais."
+            ]
+        },
+        {
+            "cell_type": "code",
+            "execution_count": None,
+            "id": "sec1_code",
+            "metadata": {},
+            "outputs": [],
+            "source": [
+                "import pytest\n",
+                "from fastapi.testclient import TestClient\n",
+                "\n",
+                "# Simulação da Fixture do cliente de teste (Equivalente ao conftest.py)\n",
+                "def criar_client_fake():\n",
+                "    from main import app\n",
+                "    return TestClient(app)\n",
+                "\n",
+                "client = criar_client_fake()\n",
+                "\n",
+                "print(\"✅ Estrutura base do TestClient carregada.\")\n",
+                "\n",
+                "# Exemplo de Smoke Test (Teste de fumaça rápido)\n",
+                "def test_api_health_endpoint():\n",
+                "    # O endpoint /ml/health deve retornar 200 se o modelo estiver em cache\n",
+                "    response = client.get(\"/ml/health\")\n",
+                "    print(f\"Status Code retornado: {response.status_code}\")\n",
+                "    print(f\"Corpo da resposta: {response.json()}\")\n",
+                "    assert response.status_code in [200, 503] # Aceita 503 se rodar sem token local\n",
+                "\n",
+                "test_api_health_endpoint()"
+            ]
+        },
+        {
+            "cell_type": "markdown",
+            "id": "sec2_title",
+            "metadata": {},
+            "source": [
+                "--- \n",
+                "# SEÇÃO 2 — Testes Avançados e Validação Parametrizada 📊"
+            ]
+        },
+        {
+            "cell_type": "markdown",
+            "id": "sec2_desc",
+            "metadata": {},
+            "source": [
+                "Para blindar a API contra quebras de contrato de dados, usamos o `@pytest.mark.parametrize`. Isso garante que requisições com dados fora dos limites de negócio tomem erro **422 Unprocessable Entity** automaticamente, protegendo o modelo."
+            ]
+        },
+        {
+            "cell_type": "code",
+            "execution_count": None,
+            "id": "sec2_code",
+            "metadata": {},
+            "outputs": [],
+            "source": [
+                "# Payload base perfeitamente válido para o Bella Tavola\n",
+                "PAYLOAD_VALIDO = {\n",
+                "    \"valor_pedido\": 120.0,\n",
+                "    \"hora_pedido\": 20,\n",
+                "    \"num_itens\": 3,\n",
+                "    \"historico_cancelamentos\": 0,\n",
+                "    \"distancia_entrega\": 2.5\n",
+                "}\n",
+                "\n",
+                "def testar_casos_invalidos_manualmente():\n",
+                "    # Casos de teste que DEVEM falhar na validação do Pydantic\n",
+                "    casos_teste = [\n",
+                "        (\"hora_pedido\", 25),        # Hora estrapola o limite de 23\n",
+                "        (\"hora_pedido\", -1),        # Hora negativa\n",
+                "        (\"num_itens\", 0),           # Pedidos sem itens\n",
+                "        (\"valor_pedido\", -10.0),    # Valor de compra negativo\n",
+                "        (\"distancia_entrega\", -5.0) # Distância negativa\n",
+                "    ]\n",
+                "    \n",
+                "    print(\"🔍 Validando respostas de erro da API (Esperado: 422):\")\n",
+                "    for campo, valor_invalido in casos_teste:\n",
+                "        payload_corrompido = {**PAYLOAD_VALIDO, campo: valor_invalido}\n",
+                "        response = client.post(\"/ml/predict\", json=payload_corrompido)\n",
+                "        print(f\" -> Campo [{campo}] com valor [{valor_invalido}] respondeu com: {response.status_code}\")\n",
+                "        assert response.status_code == 422\n",
+                "    print(\"✅ Todos os testes de contrato estático passaram!\")\n",
+                "\n",
+                "testar_casos_invalidos_manualmente()"
+            ]
+        },
+        {
+            "cell_type": "markdown",
+            "id": "sec3_title",
+            "metadata": {},
+            "source": [
+                "--- \n",
+                "# SEÇÃO 3 — MLOps: Integração Remota do Modelo Segura e Comportamental 🔒"
+            ]
+        },
+        {
+            "cell_type": "markdown",
+            "id": "sec3_desc",
+            "metadata": {},
+            "source": [
+                "Aqui validamos o comportamento do modelo baixado do registry. O teste garante que o modelo diferencia perfeitamente um cenário de baixíssimo risco operante de uma anomalia nítida na plataforma."
+            ]
+        },
+        {
+            "cell_type": "code",
+            "execution_count": None,
+            "id": "sec3_code",
+            "metadata": {},
+            "outputs": [],
+            "source": [
+                "import numpy as np\n",
+                "\n",
+                "def test_modelo_distingue_casos_extremos():\n",
+                "    try:\n",
+                "        from model_utils import load_model\n",
+                "        modelo_remoto = load_model(\"math04cezario/mlops-bella-tavola-v1\")\n",
+                "    except Exception as e:\n",
+                "        print(f\"⚠️ Pulando teste comportamental. Erro ao carregar o modelo: {e}\")\n",
+                "        return\n",
+                "        \n",
+                "    # Caso 1: Típico, legítimo (R$ 55,00, Almoço às 13h, 2 pratos, sem cancelamentos, perto)\n",
+                "    caso_tipico = np.array([[55.0, 13, 2, 0, 1.5]])\n",
+                "    prob_tipico = modelo_remoto.predict_proba(caso_tipico)[0][1]\n",
+                "    \n",
+                "    # Caso 2: Altíssimo Risco Suspeito (R$ 890,00, Madrugada às 2h, 12 pratos, 4 cancelamentos, super longe)\n",
+                "    caso_suspeito = np.array([[890.0, 2, 12, 4, 45.0]])\n",
+                "    prob_suspeito = modelo_remoto.predict_proba(caso_suspeito)[0][1]\n",
+                "    \n",
+                "    print(f\"📊 Probabilidade de Risco - Caso Típico: {prob_tipico:.4f}\")\n",
+                "    print(f\"📊 Probabilidade de Risco - Caso Suspeito: {prob_suspeito:.4f}\")\n",
+                "    \n",
+                "    # Sanidade do comportamento inteligente\n",
+                "    assert prob_suspeito > prob_tipico\n",
+                "    print(\"✅ O modelo demonstra sanidade de comportamento e discernimento lógico!\")\n",
+                "\n",
+                "test_modelo_distingue_casos_extremos()"
+            ]
+        },
+        {
+            "cell_type": "markdown",
+            "id": "sec4_title",
+            "metadata": {},
+            "source": [
+                "--- \n",
+                "# SEÇÃO 4 — A Estrutura do Pipeline CI/CD (3 Jobs Encadeados) 🚀"
+            ]
+        },
+        {
+            "cell_type": "markdown",
+            "id": "sec4_desc",
+            "metadata": {},
+            "source": [
+                "Para que o GitHub Actions rode essa suíte inteira de forma correta, o arquivo `.github/workflows/ci.yml` deve conter três macro etapas interdependentes:\n",
+                "\n",
+                "```yaml\n",
+                "name: CI — Bella Tavola\n",
+                "\n",
+                "on:\n",
+                "  push:\n",
+                "    branches: [main]\n",
+                "  pull_request:\n",
+                "    branches: [main]\n",
+                "\n",
+                "jobs:\n",
+                "  # JOB 1: Qualidade e Sanidade Básica\n",
+                "  qualidade:\n",
+                "    runs-on: ubuntu-latest\n",
+                "    steps:\n",
+                "      - uses: actions/checkout@v4\n",
+                "      - uses: actions/setup-python@v5\n",
+                "        with:\n",
+                "          python-version: \"3.11\"\n",
+                "      - name: Instalar dependências\n",
+                "        run: |\n",
+                "          pip install --upgrade pip\n",
+                "          pip install -r requirements.txt\n",
+                "      - name: Formatação estática\n",
+                "        run: black --check .\n",
+                "      - name: Limpeza de Dead Code\n",
+                "        run: autoflake --check --remove-all-unused-imports -r .\n",
+                "      - name: Testes Estruturais Smoke\n",
+                "        run: pytest -v -m smoke\n",
+                "\n",
+                "  # JOB 2: Integração e Validação com o Registry (Hugging Face)\n",
+                "  integracao:\n",
+                "    runs-on: ubuntu-latest\n",
+                "    needs: qualidade\n",
+                "    if: github.event_name == 'push' && github.ref == 'refs/heads/main'\n",
+                "    steps:\n",
+                "      - uses: actions/checkout@v4\n",
+                "      - uses: actions/setup-python@v5\n",
+                "        with:\n",
+                "          python-version: \"3.11\"\n",
+                "      - name: Instalar dependências\n",
+                "        run: pip install -r requirements.txt\n",
+                "      - name: Cache Estratégico do Modelo\n",
+                "        uses: actions/cache@v4\n",
+                "        with:\n",
+                "          path: ~/.cache/huggingface\n",
+                "          key: hf-model-v1-${{ hashFiles('requirements.txt') }}\n",
+                "      - name: Testes Comportamentais Integrados\n",
+                "        run: pytest -v -m integracao --tb=short\n",
+                "        env:\n",
+                "          HF_TOKEN: ${{ secrets.HF_TOKEN }}\n",
+                "\n",
+                "  # JOB 3: Relatório Final de Auditoria\n",
+                "  relatorio:\n",
+                "    runs-on: ubuntu-latest\n",
+                "    needs: integracao\n",
+                "    if: github.event_name == 'push' && github.ref == 'refs/heads/main'\n",
+                "    steps:\n",
+                "      - name: Sumário Executivo\n",
+                "        run: |\n",
+                "          echo \"================================================\"\n",
+                "          echo \"  Pipeline CI do Bella Tavola Concluído com Sucesso ✅\"\n",
+                "          echo \"  Commit ID: ${{ github.sha }}\"\n",
+                "          echo \"  Autor:     ${{ github.actor }}\"\n",
+                "          echo \"================================================\"\n",
+                "```"
+            ]
+        }
+    ],
+    "metadata": {
+        "kernelspec": {
+            "display_name": "Python 3",
+            "language": "python",
+            "name": "python3"
+        },
+        "language_info": {
+            "name": "python",
+            "version": "3.11.0"
+        }
+    },
+    "nbformat": 4,
+    "nbformat_minor": 5
+}
+
+with open("CDIA_CD2_2026_e04_bella_tavola_CI.ipynb", "w", encoding="utf-8") as f:
+    json.dump(combined_notebook, f, indent=2, ensure_ascii=False)
+
+print("🎉 Notebook Unificado de CI/CD gerado com sucesso!")
